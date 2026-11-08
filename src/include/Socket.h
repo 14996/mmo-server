@@ -22,9 +22,13 @@ class InetAddress {
   const char *GetIp();
   uint16_t GetPort() const;
 
+  /// 构造时 IP 解析是否成功（accept 得到的地址恒为 true）
+  bool IsValid() const { return valid_; }
+
  private:
   sockaddr_in addr_{};
   char ip_text_[INET_ADDRSTRLEN]{};
+  bool valid_{true};
 };
 
 class Socket {

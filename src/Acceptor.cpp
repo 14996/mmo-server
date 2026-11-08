@@ -29,23 +29,22 @@ Acceptor::~Acceptor() {
 }
 
 void Acceptor::AcceptConnection() {
-  InetAddress *client_addr = new InetAddress();
-  SocketHandle client_fd = sock_->Accept(client_addr);
+  InetAddress client_addr;
+  SocketHandle client_fd = sock_->Accept(&client_addr);
 
   if (client_fd != kInvalidSocket) {
     Socket *client_sock = new Socket(client_fd);
     client_sock->SetNonBlocking(true);
     client_sock->SetNoDelay();
     LogInfo("new client fd=%llu ip=%s port=%u",
-            static_cast<unsigned long long>(client_fd), client_addr->GetIp(),
-            static_cast<unsigned>(client_addr->GetPort()));
+            static_cast<unsigned long long>(client_fd), client_addr.GetIp(),
+            static_cast<unsigned>(client_addr.GetPort()));
     if (new_connection_callback_) {
       new_connection_callback_(client_sock);
     } else {
       delete client_sock;
     }
   }
-  delete client_addr;
 }
 
 void Acceptor::SetNewConnectionCallback(std::function<void(Socket *)> const &callback) {

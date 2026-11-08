@@ -12,13 +12,22 @@
 #include "Server.h"
 #include "util.h"
 
-GameServer::GameServer(Server *server)
+GameServer::GameServer(Server *server, const ServerConfig &config)
     : server_(server),
+      config_(config),
       world_([this](uint64_t player_id, uint16_t msg_id,
                     const std::string &body) {
-        SendToPlayerLocked(player_id, msg_id, body);
-      }) {
+              SendToPlayerLocked(player_id, msg_id, body);
+            },
+            WorldRuntimeConfig{config.aoi_cell_size, config.save_interval_ms,
+                               config.offline_retain_ms}) {
   ASSERT(server_ != nullptr, "server must not be null");
+  if (config_.heartbeat_timeout_ms <= 0) {
+    config_.heartbeat_timeout_ms = 30000;
+  }
+  if (config_.max_packets_per_sec == 0) {
+    config_.max_packets_per_sec = 300;
+  }
 }
 
 GameServer::~GameServer() { Stop(); }
@@ -27,11 +36,20 @@ void GameServer::Start() {
   if (running_.exchange(true)) {
     return;
   }
+  const int64_t now = NowMs();
+  last_idle_scan_ms_ = now;
+  last_metrics_ms_ = now;
+  last_metrics_packets_ = total_packets_.load(std::memory_order_relaxed);
+  last_metrics_bytes_ = total_bytes_.load(std::memory_order_relaxed);
+
   server_->SetOnNewConnection(
       [this](Connection *conn) { OnNewConnection(conn); });
   server_->SetMessageCallback([this](Connection *conn) { OnMessage(conn); });
   tick_thread_ = std::thread([this]() { TickLoop(); });
-  LogInfo("game server started (tick interval 50ms)");
+  LogInfo("game server started (tick=50ms heartbeat_timeout=%lldms "
+          "rate_limit=%u/s aoi_cell=%d)",
+          static_cast<long long>(config_.heartbeat_timeout_ms),
+          config_.max_packets_per_sec, config_.aoi_cell_size);
 }
 
 void GameServer::Stop() {
@@ -48,12 +66,116 @@ void GameServer::Stop() {
 
 void GameServer::TickLoop() {
   while (running_.load()) {
+    const int64_t now = NowMs();
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      world_.Tick(NowMs());
+      world_.Tick(now);
+
+      if (now - last_idle_scan_ms_ >= 1000) {
+        last_idle_scan_ms_ = now;
+        TickIdleSessionsLocked(now);
+      }
+      LogMetricsLocked(now);
     }
     SleepMs(50);
   }
+}
+
+void GameServer::TickIdleSessionsLocked(int64_t now_ms) {
+  std::vector<Connection *> timed_out;
+  for (auto &item : sessions_) {
+    Session &session = item.second;
+    if (session.close_requested) {
+      continue;
+    }
+    if (now_ms - session.last_active_ms < config_.heartbeat_timeout_ms) {
+      continue;
+    }
+    session.close_requested = true;
+    timed_out.push_back(item.first);
+  }
+  if (timed_out.empty()) {
+    return;
+  }
+
+  // 踢线前先把在线角色标记为离线并落盘，避免超时玩家丢进度
+  bool need_save = false;
+  for (Connection *conn : timed_out) {
+    auto it = sessions_.find(conn);
+    if (it == sessions_.end()) {
+      continue;
+    }
+    Session &session = it->second;
+    if (session.state == SessionState::kOnline && session.player_id != 0) {
+      world_.OnDisconnect(session.player_id);
+      need_save = true;
+    }
+  }
+  if (need_save) {
+    world_.SaveAll();
+  }
+
+  for (Connection *conn : timed_out) {
+    auto it = sessions_.find(conn);
+    if (it == sessions_.end()) {
+      continue;
+    }
+    const uint64_t player_id = it->second.player_id;
+    ++idle_kicks_;
+    LogWarn("heartbeat timeout, closing connection (player=%llu idle=%lldms)",
+            static_cast<unsigned long long>(player_id),
+            static_cast<long long>(now_ms - it->second.last_active_ms));
+
+    // 关键：仍在持锁状态下投递关闭任务。关闭回调需要拿同一把锁，
+    // 因此它只能在本次投递之后才可能把 delete 任务排到同一个 loop，
+    // FIFO 保证 close 一定先于 delete 执行，避免 tick 线程持有悬空指针。
+    EventLoop *loop = conn->GetLoop();
+    if (loop != nullptr) {
+      loop->AddTask([conn]() { conn->Close(); });
+    }
+  }
+}
+
+void GameServer::LogMetricsLocked(int64_t now_ms) {
+  if (now_ms - last_metrics_ms_ < 10000) {
+    return;
+  }
+  int online = 0;
+  for (const auto &item : sessions_) {
+    if (item.second.state == SessionState::kOnline) {
+      ++online;
+    }
+  }
+
+  const uint64_t packets = total_packets_.load(std::memory_order_relaxed);
+  const uint64_t bytes = total_bytes_.load(std::memory_order_relaxed);
+  const int64_t elapsed = now_ms - last_metrics_ms_;
+  const double seconds = static_cast<double>(elapsed) / 1000.0;
+  const double qps = seconds > 0.0
+                         ? static_cast<double>(packets - last_metrics_packets_) /
+                               seconds
+                         : 0.0;
+  const double bps = seconds > 0.0
+                         ? static_cast<double>(bytes - last_metrics_bytes_) /
+                               seconds
+                         : 0.0;
+
+  LogInfo("metrics: online=%d sessions=%zu qps=%.1f inbound=%.0fB/s "
+          "total_conns=%llu idle_kicks=%llu rate_limit_kicks=%llu "
+          "invalid_packets=%llu",
+          online, sessions_.size(), qps, bps,
+          static_cast<unsigned long long>(
+              total_connections_.load(std::memory_order_relaxed)),
+          static_cast<unsigned long long>(
+              idle_kicks_.load(std::memory_order_relaxed)),
+          static_cast<unsigned long long>(
+              rate_limit_kicks_.load(std::memory_order_relaxed)),
+          static_cast<unsigned long long>(
+              invalid_packets_.load(std::memory_order_relaxed)));
+
+  last_metrics_ms_ = now_ms;
+  last_metrics_packets_ = packets;
+  last_metrics_bytes_ = bytes;
 }
 
 void GameServer::OnNewConnection(Connection *conn) {
@@ -61,7 +183,11 @@ void GameServer::OnNewConnection(Connection *conn) {
   conn->SetCloseCallback([this](Connection *c) { OnConnectionClose(c); });
 
   std::lock_guard<std::mutex> lock(mutex_);
-  sessions_[conn] = Session{};
+  Session session;
+  session.last_active_ms = NowMs();
+  session.rate_limiter = RateLimiter(config_.max_packets_per_sec, 1000);
+  sessions_[conn] = std::move(session);
+  ++total_connections_;
 }
 
 void GameServer::OnConnectionClose(Connection *conn) {
@@ -71,7 +197,7 @@ void GameServer::OnConnectionClose(Connection *conn) {
     return;
   }
 
-  if (it->second.authed && it->second.player_id != 0) {
+  if (it->second.state == SessionState::kOnline && it->second.player_id != 0) {
     uint64_t player_id = it->second.player_id;
     world_.OnDisconnect(player_id);
     auto conn_it = player_conns_.find(player_id);
@@ -87,7 +213,7 @@ void GameServer::OnMessage(Connection *conn) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = sessions_.find(conn);
-    if (it == sessions_.end()) {
+    if (it == sessions_.end() || it->second.close_requested) {
       return;
     }
     session = &it->second;
@@ -96,11 +222,13 @@ void GameServer::OnMessage(Connection *conn) {
   Buffer *read_buffer = conn->GetReadBuffer();
   const size_t n = read_buffer->Size();
   if (n > 0) {
-    session->parse_buffer.append(read_buffer->Data(), n);
+    read_buffer->AppendTo(session->parse_buffer);
     read_buffer->Clear();
+    total_bytes_.fetch_add(n, std::memory_order_relaxed);
   }
 
   if (session->parse_buffer.size() > proto::kMaxPendingBytes) {
+    ++invalid_packets_;
     LogWarn("connection frame buffer overflow, closing");
     conn->Close();
     return;
@@ -113,11 +241,52 @@ void GameServer::OnMessage(Connection *conn) {
     if (status == proto::DecodeStatus::kNeedMore) {
       break;
     }
+    if (status == proto::DecodeStatus::kVersionMismatch) {
+      ++invalid_packets_;
+      LogWarn("protocol version mismatch (server=%u), closing connection",
+              static_cast<unsigned>(proto::kVersion));
+      conn->Close();
+      return;
+    }
     if (status == proto::DecodeStatus::kError) {
+      ++invalid_packets_;
       LogWarn("invalid frame header, closing connection");
       conn->Close();
       return;
     }
+
+    // 每连接固定窗口限流：超限直接断连，避免单连接刷包拖垮整个 reactor
+    bool allowed = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto it = sessions_.find(conn);
+      if (it == sessions_.end() || it->second.close_requested) {
+        return;
+      }
+      session = &it->second;
+      const int64_t now = NowMs();
+      allowed = session->rate_limiter.Allow(now);
+      if (allowed) {
+        session->last_active_ms = now;
+      }
+    }
+    if (!allowed) {
+      ++rate_limit_kicks_;
+      LogWarn("rate limit exceeded (%u/s), closing connection",
+              config_.max_packets_per_sec);
+      conn->Close();
+      return;
+    }
+
+    if (!proto::IsClientMsgId(packet.msg_id)) {
+      ++invalid_packets_;
+      LogWarn("drop illegal client msg_id=%u (player=%llu)",
+              static_cast<unsigned>(packet.msg_id),
+              static_cast<unsigned long long>(session->player_id));
+      continue;
+    }
+
+    ++total_packets_;
     Dispatch(conn, *session, packet);
   }
 }
@@ -138,8 +307,10 @@ void GameServer::Dispatch(Connection *conn, Session &session,
       break;
   }
 
-  if (!session.authed) {
-    SendErrorTo(conn, packet.seq, 401, "请先登录");
+  if (session.state != SessionState::kOnline) {
+    SendErrorTo(conn, packet.seq, 401,
+                session.state == SessionState::kAuthenticating ? "正在登录"
+                                                               : "请先登录");
     return;
   }
   const uint64_t player_id = session.player_id;
@@ -203,10 +374,11 @@ void GameServer::Dispatch(Connection *conn, Session &session,
 
 void GameServer::HandleLogin(Connection *conn, Session &session,
                              const proto::Packet &packet) {
-  if (session.authed) {
+  if (session.state != SessionState::kUnauthenticated) {
     proto::LoginResp resp;
     resp.ok = 0;
-    resp.error = "当前连接已经登录";
+    resp.error = session.state == SessionState::kOnline ? "当前连接已经登录"
+                                                        : "登录处理中";
     QueueSend(conn, proto::kLoginResp, packet.seq, proto::EncodeLoginResp(resp));
     return;
   }
@@ -221,10 +393,16 @@ void GameServer::HandleLogin(Connection *conn, Session &session,
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  if (session.state != SessionState::kUnauthenticated) {
+    return;
+  }
+  session.state = SessionState::kAuthenticating;
+
   std::string error;
   bool is_new = false;
   uint64_t player_id = world_.Login(req.name, req.password, error, is_new);
   if (player_id == 0) {
+    session.state = SessionState::kUnauthenticated;
     proto::LoginResp resp;
     resp.ok = 0;
     resp.error = error;
@@ -232,7 +410,7 @@ void GameServer::HandleLogin(Connection *conn, Session &session,
     return;
   }
 
-  session.authed = true;
+  session.state = SessionState::kOnline;
   session.player_id = player_id;
   player_conns_[player_id] = conn;
 
@@ -246,22 +424,20 @@ void GameServer::HandleLogin(Connection *conn, Session &session,
 
 void GameServer::HandleLogout(Connection *conn, Session &session,
                               const proto::Packet &packet) {
-  if (!session.authed) {
+  if (session.state != SessionState::kOnline) {
     QueueSend(conn, proto::kLogoutResp, packet.seq, "");
     return;
   }
 
+  std::lock_guard<std::mutex> lock(mutex_);
   const uint64_t player_id = session.player_id;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    world_.Logout(player_id);
-    auto it = player_conns_.find(player_id);
-    if (it != player_conns_.end() && it->second == conn) {
-      player_conns_.erase(it);
-    }
+  world_.Logout(player_id);
+  auto it = player_conns_.find(player_id);
+  if (it != player_conns_.end() && it->second == conn) {
+    player_conns_.erase(it);
   }
 
-  session.authed = false;
+  session.state = SessionState::kUnauthenticated;
   session.player_id = 0;
   QueueSend(conn, proto::kLogoutResp, packet.seq, "");
 }

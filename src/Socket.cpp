@@ -24,6 +24,7 @@ Socket::~Socket() {
 }
 
 void Socket::Bind(InetAddress *addr) {
+  ErrorIf(addr == nullptr || !addr->IsValid(), "invalid bind address");
   sockaddr_in raw = addr->GetAddr();
   int reuse = 1;
   setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&reuse), sizeof(reuse));
@@ -52,20 +53,28 @@ SocketHandle Socket::Accept(InetAddress *addr) {
         if (IsInterrupted(err)) {
           continue;
         }
-        ErrorIf(true, "socket accept error");
+        // accept 失败（如 EMFILE）不应直接终止进程，记录后等待下次事件
+        LogWarn("socket accept error=%d", err);
+        return kInvalidSocket;
       }
       break;
     }
   } else {
     client_fd = accept(fd_, reinterpret_cast<sockaddr *>(&raw), &addr_len);
-    ErrorIf(client_fd == kInvalidSocket, "socket accept error");
+    if (client_fd == kInvalidSocket) {
+      LogWarn("socket accept error=%d", LastSocketError());
+      return kInvalidSocket;
+    }
   }
 
-  addr->SetAddr(raw);
+  if (addr != nullptr) {
+    addr->SetAddr(raw);
+  }
   return client_fd;
 }
 
 void Socket::Connect(InetAddress *addr) {
+  ErrorIf(addr == nullptr || !addr->IsValid(), "invalid connect address");
   sockaddr_in raw = addr->GetAddr();
   int ret = connect(fd_, reinterpret_cast<sockaddr *>(&raw), sizeof(raw));
   if (ret == 0) {
@@ -95,7 +104,10 @@ bool Socket::IsNonBlocking() const { return nonblocking_; }
 
 void Socket::SetNoDelay() {
   int flag = 1;
-  setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&flag), sizeof(flag));
+  if (setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY,
+                 reinterpret_cast<const char *>(&flag), sizeof(flag)) != 0) {
+    LogWarn("setsockopt TCP_NODELAY failed: error=%d", LastSocketError());
+  }
 }
 
 SocketHandle Socket::GetFd() const { return fd_; }
@@ -106,10 +118,14 @@ InetAddress::InetAddress(const char *ip, uint16_t port) {
   std::memset(&addr_, 0, sizeof(addr_));
   addr_.sin_family = AF_INET;
   addr_.sin_port = htons(port);
+  if (ip == nullptr) {
+    valid_ = false;
+    return;
+  }
 #ifdef _WIN32
-  InetPtonA(AF_INET, ip, &addr_.sin_addr);
+  valid_ = InetPtonA(AF_INET, ip, &addr_.sin_addr) == 1;
 #else
-  inet_pton(AF_INET, ip, &addr_.sin_addr);
+  valid_ = inet_pton(AF_INET, ip, &addr_.sin_addr) == 1;
 #endif
 }
 

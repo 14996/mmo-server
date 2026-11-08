@@ -54,6 +54,13 @@ struct Player : Entity {
   std::unordered_map<uint32_t, int64_t> skill_ready_ms;
 };
 
+/// 运行期可调参数；默认值来自 GameConfig，由 ServerConfig 覆盖
+struct WorldRuntimeConfig {
+  int aoi_cell_size{kCellSize};
+  int64_t save_interval_ms{kSaveIntervalMs};
+  int64_t offline_retain_ms{kOfflineRetainMs};
+};
+
 struct Monster : Entity {
   int spawn_x{0};
   int spawn_y{0};
@@ -75,7 +82,7 @@ class World {
   using SendFn = std::function<void(uint64_t player_id, uint16_t msg_id,
                                    const std::string &body)>;
 
-  explicit World(SendFn send);
+  explicit World(SendFn send, const WorldRuntimeConfig &runtime = WorldRuntimeConfig{});
   ~World();
 
   DISALLOW_COPY_AND_MOVE(World);
@@ -104,11 +111,12 @@ class World {
  private:
   struct MapRuntime {
     MapConfig config;
+    int cell_size{kCellSize};
     int cells_x{0};
     int cells_y{0};
     std::vector<std::unordered_set<uint64_t>> cells;
 
-    void Init(const MapConfig &cfg);
+    void Init(const MapConfig &cfg, int aoi_cell_size);
     int CellIndex(int x, int y) const;
     void AddEntity(uint64_t id, int x, int y);
     void RemoveEntity(uint64_t id, int x, int y);
@@ -159,6 +167,7 @@ class World {
   void UpdateMonsterAi(Monster &monster, int64_t now_ms);
 
   SendFn send_;
+  WorldRuntimeConfig runtime_;
   std::string data_file_{"data/characters.dat"};
   std::unordered_map<uint64_t, std::unique_ptr<Player>> players_;
   std::unordered_map<uint64_t, std::unique_ptr<Monster>> monsters_;

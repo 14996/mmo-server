@@ -19,6 +19,7 @@ add_library(mmo_core STATIC
   src/Poller.cpp
   src/Protocol.cpp
   src/Server.cpp
+  src/ServerConfig.cpp
   src/Socket.cpp
   src/ThreadPool.cpp
   src/World.cpp
@@ -50,3 +51,11 @@ endif()
 if(MINGW)
   target_link_options(bot_client PRIVATE -static)
 endif()
+
+enable_testing()
+add_executable(test_core tests/test_core.cpp)
+target_link_libraries(test_core PRIVATE mmo_core)
+if(MINGW)
+  target_link_options(test_core PRIVATE -static)
+endif()
+add_test(NAME core_tests COMMAND test_core)

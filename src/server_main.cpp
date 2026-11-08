@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -14,6 +15,7 @@
 #include "GameServer.h"
 #include "Platform.h"
 #include "Server.h"
+#include "ServerConfig.h"
 #include "util.h"
 
 namespace {
@@ -35,7 +37,11 @@ BOOL WINAPI ConsoleHandler(DWORD event_type) {
 
 void PrintUsage(const char *program) {
   std::printf(
-      "Usage: %s [--ip 0.0.0.0] [--port 9000] [--run-seconds 0]\n"
+      "Usage: %s [--config config/server.conf] [--ip 0.0.0.0] [--port 9000]\n"
+      "          [--run-seconds 0]\n"
+      "  --config PATH    runtime config file (default: config/server.conf;\n"
+      "                   a missing default file falls back to built-in values)\n"
+      "  --ip/--port      override server.ip / server.port from the config file\n"
       "  --run-seconds N  auto shutdown after N seconds (0 = run forever), "
       "for smoke tests\n",
       program);
@@ -44,21 +50,30 @@ void PrintUsage(const char *program) {
 }  // namespace
 
 int main(int argc, char **argv) {
-  uint16_t port = 9000;
-  std::string ip = "0.0.0.0";
+  std::string config_path = "config/server.conf";
+  bool config_explicit = false;
+  bool ip_override = false;
+  bool port_override = false;
+  uint16_t cli_port = 0;
+  std::string cli_ip;
   int run_seconds = 0;
 
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
-    if (arg == "--port" && i + 1 < argc) {
+    if (arg == "--config" && i + 1 < argc) {
+      config_path = argv[++i];
+      config_explicit = true;
+    } else if (arg == "--port" && i + 1 < argc) {
       int value = std::atoi(argv[++i]);
       if (value <= 0 || value > 65535) {
         std::fprintf(stderr, "invalid port: %s\n", argv[i]);
         return 1;
       }
-      port = static_cast<uint16_t>(value);
+      cli_port = static_cast<uint16_t>(value);
+      port_override = true;
     } else if (arg == "--ip" && i + 1 < argc) {
-      ip = argv[++i];
+      cli_ip = argv[++i];
+      ip_override = true;
     } else if (arg == "--run-seconds" && i + 1 < argc) {
       run_seconds = std::atoi(argv[++i]);
       if (run_seconds < 0) {
@@ -74,6 +89,23 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+
+  ServerConfig config;
+  std::string config_error;
+  std::ifstream config_probe(config_path);
+  const bool config_found = config_probe.is_open();
+  if (!LoadServerConfig(config_path, config, config_error, !config_explicit)) {
+    std::fprintf(stderr, "config error: %s\n", config_error.c_str());
+    return 1;
+  }
+  if (ip_override) {
+    config.ip = cli_ip;
+  }
+  if (port_override) {
+    config.port = cli_port;
+  }
+  const std::string ip = config.ip;
+  const uint16_t port = config.port;
 
   IgnoreSigPipe();
   if (!SocketInit()) {
@@ -92,9 +124,15 @@ int main(int argc, char **argv) {
   try {
     EventLoop main_loop;
     auto server = std::make_unique<Server>(&main_loop, ip.c_str(), port);
-    auto game = std::make_unique<GameServer>(server.get());
+    auto game = std::make_unique<GameServer>(server.get(), config);
     game->Start();
 
+    if (config_found) {
+      LogInfo("config loaded: %s", config_path.c_str());
+    } else {
+      LogWarn("config file %s not found, using built-in defaults",
+              config_path.c_str());
+    }
     LogInfo("mmo server is ready: %s:%u (Ctrl+C to stop)", ip.c_str(),
             static_cast<unsigned>(port));
 

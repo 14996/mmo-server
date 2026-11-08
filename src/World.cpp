@@ -35,16 +35,17 @@ uint8_t EntityTypeToWire(EntityType type) {
 
 // ---------------------------------------------------------------- MapRuntime
 
-void World::MapRuntime::Init(const MapConfig &cfg) {
+void World::MapRuntime::Init(const MapConfig &cfg, int aoi_cell_size) {
   config = cfg;
-  cells_x = (config.width + kCellSize - 1) / kCellSize;
-  cells_y = (config.height + kCellSize - 1) / kCellSize;
+  cell_size = aoi_cell_size > 0 ? aoi_cell_size : kCellSize;
+  cells_x = (config.width + cell_size - 1) / cell_size;
+  cells_y = (config.height + cell_size - 1) / cell_size;
   cells.assign(static_cast<size_t>(cells_x) * static_cast<size_t>(cells_y), {});
 }
 
 int World::MapRuntime::CellIndex(int x, int y) const {
-  int cell_x = x / kCellSize;
-  int cell_y = y / kCellSize;
+  int cell_x = x / cell_size;
+  int cell_y = y / cell_size;
   cell_x = ClampInt(cell_x, 0, cells_x - 1);
   cell_y = ClampInt(cell_y, 0, cells_y - 1);
   return cell_y * cells_x + cell_x;
@@ -77,7 +78,17 @@ std::unordered_set<uint64_t> World::MapRuntime::CollectNeighborhoodIds(int cell_
 
 // ---------------------------------------------------------------- lifecycle
 
-World::World(SendFn send) : send_(std::move(send)), rng_(std::random_device{}()) {
+World::World(SendFn send, const WorldRuntimeConfig &runtime)
+    : send_(std::move(send)), runtime_(runtime), rng_(std::random_device{}()) {
+  if (runtime_.aoi_cell_size <= 0) {
+    runtime_.aoi_cell_size = kCellSize;
+  }
+  if (runtime_.save_interval_ms <= 0) {
+    runtime_.save_interval_ms = kSaveIntervalMs;
+  }
+  if (runtime_.offline_retain_ms < 0) {
+    runtime_.offline_retain_ms = 0;
+  }
   const int64_t now = NowMs();
   last_save_ms_ = now;
   last_log_ms_ = now;
@@ -90,7 +101,7 @@ World::~World() = default;
 void World::InitMaps() {
   for (auto &config : BuildMapConfigs()) {
     MapRuntime runtime;
-    runtime.Init(config);
+    runtime.Init(config, runtime_.aoi_cell_size);
     maps_[config.id] = std::move(runtime);
   }
 
@@ -360,10 +371,10 @@ void World::OnDisconnect(uint64_t player_id) {
     return;
   }
   player->online = false;
-  player->offline_deadline_ms = NowMs() + kOfflineRetainMs;
+  player->offline_deadline_ms = NowMs() + runtime_.offline_retain_ms;
   LogInfo("disconnect id=%llu name=%s (retain %llds)",
           static_cast<unsigned long long>(player->id), player->name.c_str(),
-          static_cast<long long>(kOfflineRetainMs / 1000));
+          static_cast<long long>(runtime_.offline_retain_ms / 1000));
 }
 
 void World::Logout(uint64_t player_id) {
@@ -579,7 +590,7 @@ void World::Tick(int64_t now_ms) {
   TickPlayers(now_ms);
   TickMonsters(now_ms);
 
-  if (now_ms - last_save_ms_ >= kSaveIntervalMs) {
+  if (now_ms - last_save_ms_ >= runtime_.save_interval_ms) {
     SaveAll();
     last_save_ms_ = now_ms;
   }
@@ -981,7 +992,8 @@ std::unordered_set<uint64_t> World::VisibleIds(const Entity &entity) const {
     return ids;
   }
   const MapRuntime &map = map_it->second;
-  ids = map.CollectNeighborhoodIds(entity.x / kCellSize, entity.y / kCellSize);
+  ids = map.CollectNeighborhoodIds(entity.x / map.cell_size,
+                                   entity.y / map.cell_size);
   ids.erase(entity.id);
   return ids;
 }
@@ -1056,10 +1068,10 @@ void World::AfterMove(Entity &entity, int old_x, int old_y, uint8_t dir) {
   move_notify.dir = dir;
   const std::string move_body = EncodeMoveNotify(move_notify);
 
-  const int old_cell_x = old_x / kCellSize;
-  const int old_cell_y = old_y / kCellSize;
-  const int new_cell_x = entity.x / kCellSize;
-  const int new_cell_y = entity.y / kCellSize;
+  const int old_cell_x = old_x / map->cell_size;
+  const int old_cell_y = old_y / map->cell_size;
+  const int new_cell_x = entity.x / map->cell_size;
+  const int new_cell_y = entity.y / map->cell_size;
 
   if (old_cell_x == new_cell_x && old_cell_y == new_cell_y) {
     std::unordered_set<uint64_t> neighbors =

@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <string>
 
@@ -47,6 +48,9 @@ class Connection {
   void SetDeleteConnectionCallback(std::function<void(Socket *)> const &callback);
 
  private:
+  // 对端不读数据时限制发送队列，避免内存无限增长
+  static constexpr size_t kMaxSendBufferBytes = 4 * 1024 * 1024;
+
   void HandleRead();
   void HandleWrite();
   void ReadNonBlocking();

@@ -5,7 +5,7 @@
  * 包头布局：
  *   magic    u32  0x4D4D4F31 ("MMO1")
  *   msgId    u16
- *   flags    u16  预留
+ *   version  u16  协议版本（复用原 flags 字段）
  *   seq      u32
  *   bodyLen  u32
  */
@@ -19,6 +19,7 @@
 namespace proto {
 
 constexpr uint32_t kMagic = 0x4D4D4F31;
+constexpr uint16_t kVersion = 1;
 constexpr size_t kHeaderSize = 16;
 constexpr uint32_t kMaxBodySize = 64 * 1024;
 constexpr size_t kMaxPendingBytes = 256 * 1024;
@@ -59,7 +60,11 @@ enum class DecodeStatus {
   kNeedMore,
   kOk,
   kError,
+  kVersionMismatch,
 };
+
+/// 客户端允许发送的消息 ID（服务端下发消息不能由客户端上报）
+bool IsClientMsgId(uint16_t msg_id);
 
 /// 从缓冲区中取出一个完整包；成功时会从 buffer 头部移除已消费字节
 DecodeStatus DecodeFromBuffer(std::string &buffer, Packet &packet);

@@ -107,12 +107,28 @@ bool Reader::Str(std::string &value, size_t max_len) {
   return true;
 }
 
+bool IsClientMsgId(uint16_t msg_id) {
+  switch (msg_id) {
+    case kLoginReq:
+    case kHeartbeatReq:
+    case kMoveReq:
+    case kChatReq:
+    case kAttackReq:
+    case kSkillReq:
+    case kChangeMapReq:
+    case kLogoutReq:
+      return true;
+    default:
+      return false;
+  }
+}
+
 std::string EncodePacket(uint16_t msg_id, uint32_t seq, const std::string &body) {
   std::string out;
   out.reserve(kHeaderSize + body.size());
   WriteU32(out, kMagic);
   WriteU16(out, msg_id);
-  WriteU16(out, 0);
+  WriteU16(out, kVersion);
   WriteU32(out, seq);
   WriteU32(out, static_cast<uint32_t>(body.size()));
   out.append(body);
@@ -126,11 +142,15 @@ DecodeStatus DecodeFromBuffer(std::string &buffer, Packet &packet) {
   const char *data = buffer.data();
   uint32_t magic = ReadU32(data);
   uint16_t msg_id = ReadU16(data + 4);
+  uint16_t version = ReadU16(data + 6);
   uint32_t seq = ReadU32(data + 8);
   uint32_t body_len = ReadU32(data + 12);
 
   if (magic != kMagic || body_len > kMaxBodySize) {
     return DecodeStatus::kError;
+  }
+  if (version != kVersion) {
+    return DecodeStatus::kVersionMismatch;
   }
   if (buffer.size() < kHeaderSize + body_len) {
     return DecodeStatus::kNeedMore;

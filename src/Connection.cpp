@@ -3,7 +3,9 @@
  */
 #include "Connection.h"
 
+#include <algorithm>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 #include "Channel.h"
@@ -34,6 +36,12 @@ void Connection::EnableRead() {
 
 void Connection::Send(const std::string &data) {
   if (state_ != State::Connected || data.empty()) {
+    return;
+  }
+  if (send_buffer_.Size() + data.size() > kMaxSendBufferBytes) {
+    LogWarn("send buffer overflow (%zu bytes), closing connection",
+            send_buffer_.Size() + data.size());
+    Close();
     return;
   }
   send_buffer_.Append(data);
@@ -121,14 +129,14 @@ void Connection::ReadNonBlocking() {
 
 void Connection::WriteNonBlocking() {
   SocketHandle fd = sock_->GetFd();
-  std::string data = send_buffer_.ToString();
-  size_t written = 0;
 
-  while (written < data.size()) {
-    ssize_t n = SocketWrite(fd, data.data() + written,
-                            static_cast<int>(data.size() - written));
+  while (send_buffer_.Size() > 0) {
+    const size_t chunk = std::min(
+        send_buffer_.ReadableBytes(),
+        static_cast<size_t>(std::numeric_limits<int>::max()));
+    ssize_t n = SocketWrite(fd, send_buffer_.ReadPtr(), static_cast<int>(chunk));
     if (n > 0) {
-      written += static_cast<size_t>(n);
+      send_buffer_.Retrieve(static_cast<size_t>(n));
       continue;
     }
     if (n == 0) {
@@ -147,10 +155,6 @@ void Connection::WriteNonBlocking() {
     }
     state_ = State::Closed;
     break;
-  }
-
-  if (written > 0) {
-    send_buffer_.Erase(written);
   }
 
   if (state_ != State::Connected) {
