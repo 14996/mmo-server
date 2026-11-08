@@ -1,3 +1,5 @@
+> **声明**：本仓库代码由 Claude Code 生成，仅供学习参考。
+
 # MMO Server：精简版 MMORPG 服务端
 
 一个 C++ 后端项目。在桌面 `src` 的 epoll Reactor 骨架上补齐网络层缺陷，并实现了一个可构建、可联调、可压测、可持久化的单进程多地图 MMORPG 服务端。
