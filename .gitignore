@@ -1,0 +1,11 @@
+# 构建产物
+build/
+build-cmake/
+cmake-build-*/
+
+# 运行时数据（保留目录占位）
+data/*
+!data/.gitkeep
+
+# 日志
+*.log
