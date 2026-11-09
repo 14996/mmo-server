@@ -21,7 +21,7 @@ class ThreadPool;
 
 class Server {
  public:
-  explicit Server(EventLoop *loop, const char *ip = "0.0.0.0", uint16_t port = 9000);
+  explicit Server(EventLoop *loop, const char *ip = "0.0.0.0", uint16_t port = 9527);
   ~Server();
 
   DISALLOW_COPY_AND_MOVE(Server);

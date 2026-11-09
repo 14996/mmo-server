@@ -3,6 +3,7 @@
  */
 #include "Socket.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "util.h"
@@ -26,10 +27,27 @@ Socket::~Socket() {
 void Socket::Bind(InetAddress *addr) {
   ErrorIf(addr == nullptr || !addr->IsValid(), "invalid bind address");
   sockaddr_in raw = addr->GetAddr();
+#ifdef _WIN32
+  // Windows 的 SO_REUSEADDR 语义与 Linux 不同：它允许“抢占”其他程序
+  // 已占用的端口，导致两个进程同时监听同一端口、连接被随机路由。
+  // 这里改为独占绑定：端口被占用时直接报错，而不是悄悄共用。
+  int exclusive = 1;
+  setsockopt(fd_, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+             reinterpret_cast<const char *>(&exclusive), sizeof(exclusive));
+#else
   int reuse = 1;
-  setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&reuse), sizeof(reuse));
+  setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR,
+             reinterpret_cast<const char *>(&reuse), sizeof(reuse));
+#endif
   int ret = bind(fd_, reinterpret_cast<sockaddr *>(&raw), sizeof(raw));
-  ErrorIf(ret == -1, "socket bind error");
+  if (ret == -1) {
+    char message[160];
+    std::snprintf(message, sizeof(message),
+                  "bind port %u failed: error=%d. "
+                  "Port already in use? Try: mmo_server --port <other>",
+                  static_cast<unsigned>(addr->GetPort()), LastSocketError());
+    ErrorIf(true, message);
+  }
 }
 
 void Socket::Listen() {

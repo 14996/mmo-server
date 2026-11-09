@@ -30,7 +30,7 @@
 ```bash
 ./build.sh
 ./build_tests.sh
-./run_demo.sh 20 30 9100
+./run_demo.sh 20 30 9527
 ```
 
 ### 手动运行
@@ -40,12 +40,20 @@
 ./build/mmo_server.exe --config config/server.conf
 
 # 终端 2：20 个机器人，运行 30 秒
-./build/bot_client.exe --host 127.0.0.1 --port 9000 --bots 20 --duration 30
+./build/bot_client.exe --host 127.0.0.1 --port 9527 --bots 20 --duration 30
 ```
 
 Linux 下去掉 `.exe` 后缀。默认配置文件不存在时会回退到内置默认值；显式传入 `--config` 但文件缺失或配置非法时启动失败。命令行 `--ip` / `--port` 会覆盖配置文件。服务器支持 `--run-seconds N` 在 N 秒后自动优雅退出（0 表示常驻），便于脚本化测试。`Ctrl+C` 会触发保存并干净退出。
 
 `run_demo.sh` 每次会清空 `data/`，启动带自动退出时间的服务器，跑完机器人后打印客户端指标、服务器日志尾部以及落盘角色数。
+
+> **常见问题：端口被占用**。本机安装 VMware 时其 NAT 服务（vmnat.exe）会占用 9000 端口，所以默认端口已改为 9527。若启动时报 `Port already in use`，先用 `netstat -ano | findstr 9527` 查看占用，再换端口启动：
+>
+> ```bash
+> ./build/mmo_server.exe --port 9528
+> ```
+>
+> Windows 下监听 socket 使用独占绑定（`SO_EXCLUSIVEADDRUSE`），端口被占用会立即报错退出，不会与别的程序悄悄共用端口。
 
 ---
 
@@ -225,7 +233,7 @@ TCP clients ────────────▶│ Acceptor ── 按 fd �
 
 | key | 默认值 | 说明 |
 | --- | --- | --- |
-| `server.ip` / `server.port` | `0.0.0.0` / `9000` | 监听地址，命令行可覆盖 |
+| `server.ip` / `server.port` | `0.0.0.0` / `9527` | 监听地址，命令行可覆盖 |
 | `net.heartbeat_timeout_ms` | `30000` | 空闲踢线阈值 |
 | `net.max_packets_per_sec` | `300` | 单连接每秒消息上限 |
 | `game.save_interval_ms` | `30000` | 周期存档间隔 |
@@ -306,7 +314,7 @@ mmo-server/
 └── data/characters.dat         # 运行时生成的角色存档
 ```
 
-服务端代码约 5.3k 行，机器人与测试约 0.9k 行。
+服务端代码约 5.3k 行，机器人与单元测试约 0.9k 行。
 
 ---
 
@@ -344,9 +352,9 @@ ctest --test-dir build-cmake --output-on-failure
 ### 运行参数
 
 ```text
-mmo_server  [--config config/server.conf] [--ip 0.0.0.0] [--port 9000]
+mmo_server  [--config config/server.conf] [--ip 0.0.0.0] [--port 9527]
             [--run-seconds 0]
-bot_client  [--host 127.0.0.1] [--port 9000] [--bots 20] [--duration 30]
+bot_client  [--host 127.0.0.1] [--port 9527] [--bots 20] [--duration 30]
             [--prefix bot] [--start-index 0]
 ```
 
@@ -416,7 +424,7 @@ bot_client  [--host 127.0.0.1] [--port 9000] [--bots 20] [--duration 30]
 - **单进程**：没有网关、分线、跨服、分布式会话，也没有 trace_id 跨服务追踪。
 - **文件存档**：全量写文件，不支持事务、回滚、分库分表；没有 MySQL 连接池、Redis 缓存和脏标记批量落库，适合演示，不适合真实运营。
 - **无碰撞/寻路**：格子直走，没有障碍物、A* 和视线判断。
-- **无图形客户端**：用机器人验证协议与玩法。
+- **无图形客户端**：仓库内只有 headless 机器人；另有一个 Python/tkinter 演示客户端（独立目录，不随本仓库发布），不包含美术资源、预测/插值等正式客户端能力。
 - **安全能力有限**：密码哈希为演示级，未接 TLS、验证码、风控和审计；已实现单连接包速率限制与非法包断连，但没有账号级/IP 级风控。
 - **可观测性有限**：有同步分级日志和 10 秒运行指标，但没有异步日志、崩溃转储/core stack、Prometheus 指标和链路追踪。
 - **Linux epoll 路径与 CMake 脚本**：代码路径已保留，但本机开发环境为 Windows，需在 Linux 上做一次编译和回归。
@@ -430,4 +438,4 @@ bot_client  [--host 127.0.0.1] [--port 9000] [--bots 20] [--duration 30]
 - 协议升级：Protobuf/FlatBuffers、压缩、加密
 - 战斗系统：Buff/Debuff、仇恨列表、掉落表、副本与队伍
 - 工程化：配置热更新、Prometheus 指标、异步/结构化日志、崩溃转储、ASan/TSan 回归
-- 客户端：SDL/Raylib/WebSocket 简易 2D 客户端，或把机器人升级为可视化调试器
+- 客户端：制作 SDL/Raylib/WebSocket 正式图形客户端，增加移动预测与插值

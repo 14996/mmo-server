@@ -58,7 +58,7 @@ void BotLog(const char *fmt, ...) {
 
 struct Options {
   std::string host{"127.0.0.1"};
-  uint16_t port{9000};
+  uint16_t port{9527};
   int bots{10};
   int duration_s{60};
   std::string prefix{"bot"};
@@ -631,7 +631,7 @@ int main(int argc, char **argv) {
       options.start_index = std::atoi(argv[++i]);
     } else if (arg == "--help" || arg == "-h") {
       std::printf(
-          "Usage: %s [--host 127.0.0.1] [--port 9000] [--bots 10] "
+          "Usage: %s [--host 127.0.0.1] [--port 9527] [--bots 10] "
           "[--duration 60] [--prefix bot] [--start-index 0]\n",
           argv[0]);
       return 0;

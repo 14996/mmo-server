@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 一键联调/压测演示：启动服务器（自动退出）+ 一批机器人，打印汇总指标
-# 用法: ./run_demo.sh [bot数量=20] [运行秒数=30] [端口=9100]
+# 用法: ./run_demo.sh [bot数量=20] [运行秒数=30] [端口=9527]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,7 +8,7 @@ cd "$ROOT"
 
 BOTS="${1:-20}"
 DURATION="${2:-30}"
-PORT="${3:-9100}"
+PORT="${3:-9527}"
 
 case "$(uname -s)" in
   MINGW*|MSYS*)

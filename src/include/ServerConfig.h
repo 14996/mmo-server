@@ -9,7 +9,7 @@
 
 struct ServerConfig {
   std::string ip{"0.0.0.0"};
-  uint16_t port{9000};
+  uint16_t port{9527};
 
   // 网络层
   int64_t heartbeat_timeout_ms{30000};
